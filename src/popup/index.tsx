@@ -8,6 +8,9 @@ interface PopupState {
   currentSession: CaptureSession | null;
   sessions: CaptureSession[];
   newSessionTitle: string;
+  isCreatingSession: boolean;
+  isStartingRecording: boolean;
+  isStoppingRecording: boolean;
 }
 
 export default function Popup() {
@@ -16,6 +19,9 @@ export default function Popup() {
     currentSession: null,
     sessions: [],
     newSessionTitle: "",
+    isCreatingSession: false,
+    isStartingRecording: false,
+    isStoppingRecording: false,
   });
 
   useEffect(() => {
@@ -35,47 +41,83 @@ export default function Popup() {
   };
 
   const createNewSession = async () => {
-    const [tab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
-    const title =
-      state.newSessionTitle || `Session ${new Date().toLocaleString()}`;
+    if (state.isCreatingSession) return;
 
-    const response = await chrome.runtime.sendMessage({
-      type: "CREATE_SESSION",
-      title: title,
-      url: tab.url,
-    });
+    setState((prev) => ({ ...prev, isCreatingSession: true }));
 
-    setState((prev) => ({ ...prev, newSessionTitle: "" }));
-    await loadData();
+    try {
+      const [tab] = await chrome.tabs.query({
+        active: true,
+        currentWindow: true,
+      });
+      const title =
+        state.newSessionTitle || `Session ${new Date().toLocaleString()}`;
+
+      const response = await chrome.runtime.sendMessage({
+        type: "CREATE_SESSION",
+        title: title,
+        url: tab.url,
+      });
+
+      setState((prev) => ({ ...prev, newSessionTitle: "" }));
+      await loadData();
+    } catch (error) {
+      console.error("Erreur création session:", error);
+    } finally {
+      setState((prev) => ({ ...prev, isCreatingSession: false }));
+    }
   };
 
   const startRecording = async () => {
-    if (!state.currentSession) {
-      await createNewSession();
-      await loadData();
+    if (state.isStartingRecording || state.isCreatingSession) return;
+
+    setState((prev) => ({ ...prev, isStartingRecording: true }));
+
+    try {
+      let session = state.currentSession;
+
+      // Créer une nouvelle session si nécessaire
+      if (!session) {
+        await createNewSession();
+        await loadData();
+        const data = await StorageManager.getData();
+        session = data.sessions[data.sessions.length - 1];
+      }
+
+      if (!session) {
+        throw new Error("Impossible de créer ou récupérer une session");
+      }
+
+      await chrome.runtime.sendMessage({
+        type: "START_RECORDING",
+        sessionId: session.id,
+      });
+
+      setState((prev) => ({ ...prev, isRecording: true }));
+    } catch (error) {
+      console.error("Erreur démarrage enregistrement:", error);
+    } finally {
+      setState((prev) => ({ ...prev, isStartingRecording: false }));
     }
-
-    const session =
-      state.currentSession || state.sessions[state.sessions.length - 1];
-
-    await chrome.runtime.sendMessage({
-      type: "START_RECORDING",
-      sessionId: session.id,
-    });
-
-    setState((prev) => ({ ...prev, isRecording: true }));
   };
 
   const stopRecording = async () => {
-    await chrome.runtime.sendMessage({
-      type: "STOP_RECORDING",
-    });
+    if (state.isStoppingRecording) return;
 
-    setState((prev) => ({ ...prev, isRecording: false }));
-    await loadData();
+    setState((prev) => ({ ...prev, isStoppingRecording: true }));
+
+    try {
+      await chrome.runtime.sendMessage({
+        type: "STOP_RECORDING",
+      });
+
+      setState((prev) => ({ ...prev, isRecording: false }));
+      await loadData();
+    } catch (error) {
+      console.error("Erreur arrêt enregistrement:", error);
+    } finally {
+      setState((prev) => ({ ...prev, isStoppingRecording: false }));
+    }
   };
 
   const openEditor = (sessionId: string) => {
@@ -138,18 +180,38 @@ export default function Popup() {
           {!state.isRecording ? (
             <button
               onClick={startRecording}
-              className="btn-primary flex-1 flex items-center justify-center gap-2"
+              disabled={state.isStartingRecording || state.isCreatingSession}
+              className="btn-primary flex-1 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <div className="w-3 h-3 bg-white rounded-full"></div>
-              Démarrer
+              {state.isStartingRecording || state.isCreatingSession ? (
+                <>
+                  <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  {state.isCreatingSession ? "Création..." : "Démarrage..."}
+                </>
+              ) : (
+                <>
+                  <div className="w-3 h-3 bg-white rounded-full"></div>
+                  Démarrer
+                </>
+              )}
             </button>
           ) : (
             <button
               onClick={stopRecording}
-              className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors flex-1 flex items-center justify-center gap-2"
+              disabled={state.isStoppingRecording}
+              className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors flex-1 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <div className="w-3 h-3 bg-white"></div>
-              Arrêter
+              {state.isStoppingRecording ? (
+                <>
+                  <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  Arrêt...
+                </>
+              ) : (
+                <>
+                  <div className="w-3 h-3 bg-white"></div>
+                  Arrêter
+                </>
+              )}
             </button>
           )}
         </div>
@@ -172,9 +234,17 @@ export default function Popup() {
           />
           <button
             onClick={createNewSession}
-            className="btn-secondary w-full mt-2 text-sm"
+            disabled={state.isCreatingSession}
+            className="btn-secondary w-full mt-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Créer une session
+            {state.isCreatingSession ? (
+              <>
+                <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin inline-block mr-2"></div>
+                Création...
+              </>
+            ) : (
+              "Créer une session"
+            )}
           </button>
         </div>
       )}

@@ -22,11 +22,15 @@ export class SelectorGenerator {
       return `[aria-label="${ariaLabel}"]`;
     }
 
-    // 4. Combinaison classe + texte
+    // 4. Combinaison classe + texte (sans :contains qui n'est pas CSS valide)
     const className = element.className;
     const text = element.textContent?.trim();
     if (className && text && text.length < 50) {
-      return `.${className.split(" ")[0]}:contains("${text}")`;
+      // Utiliser une classe CSS valide au lieu de :contains
+      const firstClass = className.split(" ")[0];
+      if (firstClass && this.isValidCSSClass(firstClass)) {
+        return `.${firstClass}`;
+      }
     }
 
     // 5. Fallback XPath
@@ -92,5 +96,41 @@ export class SelectorGenerator {
     });
 
     return attrs;
+  }
+
+  /**
+   * Valide qu'une classe CSS est valide
+   */
+  private static isValidCSSClass(className: string): boolean {
+    // Vérifier que la classe ne contient que des caractères valides
+    return /^[a-zA-Z_-][a-zA-Z0-9_-]*$/.test(className);
+  }
+
+  /**
+   * Valide qu'un sélecteur CSS est valide
+   */
+  static isValidSelector(selector: string): boolean {
+    try {
+      // Tenter de créer un élément avec le sélecteur
+      document.querySelector(selector);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
+   * Génère un sélecteur sécurisé avec validation
+   */
+  static generateSafeSelector(element: Element): string {
+    const selector = this.generateSelector(element);
+
+    // Si le sélecteur n'est pas valide, utiliser un fallback
+    if (!this.isValidSelector(selector)) {
+      console.warn("⚠️ Sélecteur invalide généré:", selector);
+      return this.generateXPath(element);
+    }
+
+    return selector;
   }
 }

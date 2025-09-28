@@ -1,8 +1,10 @@
 import type { PlasmoCSConfig } from "plasmo";
 import type { UserAction } from "~src/types";
+import { ErrorHandler } from "~src/utils/error-handler";
 import { SecurityManager } from "~src/utils/security";
 import { SelectorGenerator } from "~src/utils/selectors";
 import { StorageManager } from "~src/utils/storage";
+import { VisualIndicatorManager } from "~src/utils/visual-indicators";
 
 // Configuration Plasmo pour le content script
 export const config: PlasmoCSConfig = {
@@ -16,8 +18,12 @@ class ActionCapture {
   private isRecording = false;
   private sessionId: string | null = null;
   private actionCounter = 0;
+  private visualIndicator: VisualIndicatorManager;
+  private errorHandler: ErrorHandler;
 
   constructor() {
+    this.visualIndicator = VisualIndicatorManager.getInstance();
+    this.errorHandler = ErrorHandler.getInstance();
     this.init();
   }
 
@@ -34,7 +40,10 @@ class ActionCapture {
       const currentSession = await StorageManager.getCurrentSession();
       console.log("📊 Session actuelle trouvée:", currentSession);
       if (currentSession?.isRecording) {
-        console.log("🔄 Reprise de l'enregistrement de la session:", currentSession.id);
+        console.log(
+          "🔄 Reprise de l'enregistrement de la session:",
+          currentSession.id
+        );
         this.startRecording(currentSession.id);
       }
 
@@ -43,11 +52,13 @@ class ActionCapture {
         window.location.href
       );
     } catch (error) {
-      if (error instanceof Error && error.message?.includes("Extension context invalidated")) {
-        console.log("Extension context invalidated during initialization");
-        return;
-      }
-      console.error("Error initializing ActionCapture:", error);
+      this.errorHandler.handleError(
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          component: "ActionCapture",
+          action: "init",
+        }
+      );
     }
   }
 
@@ -55,7 +66,10 @@ class ActionCapture {
     console.log("🔧 Traitement du message:", message.type, message);
     switch (message.type) {
       case "START_RECORDING":
-        console.log("▶️ Démarrage de l'enregistrement pour session:", message.sessionId);
+        console.log(
+          "▶️ Démarrage de l'enregistrement pour session:",
+          message.sessionId
+        );
         await this.startRecording(message.sessionId);
         sendResponse({ success: true });
         break;
@@ -82,6 +96,9 @@ class ActionCapture {
     this.sessionId = sessionId;
     this.actionCounter = 0;
 
+    // Réinitialiser le compteur d'erreurs
+    this.errorHandler.resetErrorCount();
+
     // Ajouter les event listeners
     this.addEventListeners();
 
@@ -95,6 +112,13 @@ class ActionCapture {
 
     // Retirer les event listeners
     this.removeEventListeners();
+
+    // Nettoyer les indicateurs visuels
+    try {
+      this.visualIndicator.cleanup();
+    } catch (error) {
+      console.warn("⚠️ Erreur nettoyage indicateurs:", error);
+    }
 
     console.log("⏹️ Enregistrement arrêté");
   }
@@ -119,7 +143,7 @@ class ActionCapture {
     console.log("👆 Click détecté", {
       isRecording: this.isRecording,
       sessionId: this.sessionId,
-      target: event.target
+      target: event.target,
     });
 
     if (!this.isRecording || !this.sessionId) {
@@ -139,13 +163,34 @@ class ActionCapture {
       return;
     }
 
+    // Afficher l'indicateur visuel de clic
+    try {
+      this.visualIndicator.showClickIndicator(
+        event.clientX,
+        event.clientY,
+        target
+      );
+    } catch (error) {
+      this.errorHandler.handleSilentError(
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          component: "ActionCapture",
+          action: "showClickIndicator",
+          element: target,
+        }
+      );
+    }
+
     console.log("✅ Click valide - création de l'action");
 
     const action: UserAction = {
       id: `${this.sessionId}_${++this.actionCounter}`,
       type: "click",
       timestamp: Date.now(),
-      element: SelectorGenerator.getElementInfo(target),
+      element: {
+        ...SelectorGenerator.getElementInfo(target),
+        selector: SelectorGenerator.generateSafeSelector(target),
+      },
       description: this.generateClickDescription(target),
     };
 
@@ -160,6 +205,20 @@ class ActionCapture {
     const target = event.target as HTMLInputElement;
     if (!target) return;
 
+    // Afficher l'indicateur visuel de saisie
+    try {
+      this.visualIndicator.showInputIndicator(target);
+    } catch (error) {
+      this.errorHandler.handleSilentError(
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          component: "ActionCapture",
+          action: "showInputIndicator",
+          element: target,
+        }
+      );
+    }
+
     // Utiliser SecurityManager pour obtenir une valeur sécurisée
     const safeValue = SecurityManager.getSafeElementValue(target);
     const isSensitive = SecurityManager.isSensitiveElement(target);
@@ -170,6 +229,7 @@ class ActionCapture {
       timestamp: Date.now(),
       element: {
         ...SelectorGenerator.getElementInfo(target),
+        selector: SelectorGenerator.generateSafeSelector(target),
         value: safeValue,
       },
       description: this.generateInputDescription(target, isSensitive),
@@ -186,6 +246,21 @@ class ActionCapture {
     if (this.lastScrollTime && Date.now() - this.lastScrollTime < 1000) return;
     this.lastScrollTime = Date.now();
 
+    const direction = window.scrollY > (this.lastScrollY || 0) ? "down" : "up";
+
+    // Afficher l'indicateur visuel de défilement
+    try {
+      this.visualIndicator.showScrollIndicator(direction);
+    } catch (error) {
+      this.errorHandler.handleSilentError(
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          component: "ActionCapture",
+          action: "showScrollIndicator",
+        }
+      );
+    }
+
     const action: UserAction = {
       id: `${this.sessionId}_${++this.actionCounter}`,
       type: "scroll",
@@ -198,7 +273,7 @@ class ActionCapture {
         attributes: {},
       },
       description: `Défilement vers ${
-        window.scrollY > (this.lastScrollY || 0) ? "le bas" : "le haut"
+        direction === "down" ? "le bas" : "le haut"
       }`,
     };
 
@@ -274,18 +349,33 @@ class ActionCapture {
 
   private async requestScreenshot(actionId: string) {
     try {
+      console.log("📸 Demande de screenshot pour action:", actionId);
+
       // Demander une capture d'écran au background script
-      await chrome.runtime.sendMessage({
+      const response = await chrome.runtime.sendMessage({
         type: "TAKE_SCREENSHOT",
         actionId: actionId,
       });
-    } catch (error) {
-      // Ignorer les erreurs de contexte d'extension
-      if (error instanceof Error && error.message?.includes("Extension context invalidated")) {
-        console.log("Extension context invalidated - screenshot request ignored");
+
+      if (response?.success) {
+        console.log("✅ Screenshot demandé avec succès pour:", actionId);
       } else {
-        console.error("Screenshot request failed:", error);
+        console.warn("⚠️ Screenshot request response:", response);
+        this.errorHandler.handleError("Erreur capture d'écran", {
+          component: "ActionCapture",
+          action: "requestScreenshot",
+          sessionId: this.sessionId || undefined,
+        });
       }
+    } catch (error) {
+      this.errorHandler.handleError(
+        error instanceof Error ? error : new Error(String(error)),
+        {
+          component: "ActionCapture",
+          action: "requestScreenshot",
+          sessionId: this.sessionId || undefined,
+        }
+      );
     }
   }
 }

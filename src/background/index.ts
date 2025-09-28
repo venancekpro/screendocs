@@ -1,8 +1,22 @@
 import type { CaptureSession } from "~src/types";
 import { StorageManager } from "~src/utils/storage";
 
+// Interface pour la queue de screenshots
+interface ScreenshotRequest {
+  id: string;
+  actionId: string;
+  tabId: number;
+  timestamp: number;
+  retryCount: number;
+}
+
 // Background script pour gérer les captures d'écran et la coordination
 class BackgroundManager {
+  private screenshotQueue: ScreenshotRequest[] = [];
+  private isProcessingScreenshots = false;
+  private readonly MAX_RETRIES = 3;
+  private readonly SCREENSHOT_DELAY = 500; // Délai avant capture en ms
+
   constructor() {
     this.init();
   }
@@ -44,7 +58,9 @@ class BackgroundManager {
         break;
 
       case "TAKE_SCREENSHOT":
-        await this.takeScreenshot(message.actionId, sender.tab?.id);
+        if (sender.tab?.id) {
+          await this.queueScreenshot(message.actionId, sender.tab.id);
+        }
         sendResponse({ success: true });
         break;
 
@@ -154,10 +170,73 @@ class BackgroundManager {
     }
   }
 
-  private async takeScreenshot(actionId: string, tabId?: number) {
-    if (!tabId) return;
+  private async queueScreenshot(actionId: string, tabId: number) {
+    const request: ScreenshotRequest = {
+      id: `screenshot_${Date.now()}_${Math.random()}`,
+      actionId,
+      tabId,
+      timestamp: Date.now(),
+      retryCount: 0,
+    };
 
+    this.screenshotQueue.push(request);
+    console.log("📸 Screenshot ajouté à la queue:", actionId);
+
+    // Démarrer le traitement si pas déjà en cours
+    if (!this.isProcessingScreenshots) {
+      this.processScreenshotQueue();
+    }
+  }
+
+  private async processScreenshotQueue() {
+    if (this.isProcessingScreenshots || this.screenshotQueue.length === 0) {
+      return;
+    }
+
+    this.isProcessingScreenshots = true;
+    console.log("🔄 Traitement de la queue de screenshots, taille:", this.screenshotQueue.length);
+
+    while (this.screenshotQueue.length > 0) {
+      const request = this.screenshotQueue.shift()!;
+
+      try {
+        // Attendre un délai pour s'assurer que l'action est visible
+        await new Promise(resolve => setTimeout(resolve, this.SCREENSHOT_DELAY));
+
+        await this.takeScreenshot(request);
+        console.log("✅ Screenshot traité avec succès:", request.actionId);
+      } catch (error) {
+        console.error("❌ Erreur screenshot:", error);
+
+        // Retry si possible
+        if (request.retryCount < this.MAX_RETRIES) {
+          request.retryCount++;
+          this.screenshotQueue.push(request);
+          console.log("🔄 Retry screenshot:", request.actionId, "tentative", request.retryCount);
+        } else {
+          console.error("💥 Screenshot échoué définitivement:", request.actionId);
+        }
+      }
+    }
+
+    this.isProcessingScreenshots = false;
+    console.log("✅ Queue de screenshots traitée");
+  }
+
+  private async takeScreenshot(request: ScreenshotRequest) {
     try {
+      // Vérifier que l'onglet existe encore
+      const tab = await chrome.tabs.get(request.tabId);
+      if (!tab) {
+        throw new Error("Onglet non trouvé");
+      }
+
+      // S'assurer que l'onglet est l'onglet actif pour la capture
+      await chrome.tabs.update(request.tabId, { active: true });
+
+      // Petit délai supplémentaire pour s'assurer que l'onglet est prêt
+      await new Promise(resolve => setTimeout(resolve, 100));
+
       // Capturer l'onglet visible
       const dataUrl = await chrome.tabs.captureVisibleTab(undefined, {
         format: "png",
@@ -167,14 +246,20 @@ class BackgroundManager {
       // Sauvegarder la capture avec l'action
       const session = await StorageManager.getCurrentSession();
       if (session) {
-        const action = session.actions.find((a) => a.id === actionId);
+        const action = session.actions.find((a) => a.id === request.actionId);
         if (action) {
           action.screenshot = dataUrl;
           await StorageManager.saveSession(session);
+          console.log("💾 Screenshot sauvegardé pour action:", request.actionId);
+        } else {
+          throw new Error("Action non trouvée dans la session");
         }
+      } else {
+        throw new Error("Aucune session active");
       }
     } catch (error) {
       console.error("Erreur capture d'écran:", error);
+      throw error;
     }
   }
 

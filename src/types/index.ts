@@ -26,9 +26,10 @@ export interface CaptureSession {
 }
 
 export interface ExportOptions {
-  format: "markdown" | "pdf" | "html";
+  format: "markdown" | "html" | "zip";
   includeScreenshots: boolean;
   blurSensitiveData: boolean;
+  imageFormat?: "embedded" | "separate";
 }
 
 export interface StorageData {

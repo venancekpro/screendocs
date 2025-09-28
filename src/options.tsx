@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import "~src/style.css";
 import type { CaptureSession, ExportOptions } from "~src/types";
 import { StorageManager } from "~src/utils/storage";
+import { ExportManager } from "~src/utils/export";
 
 interface EditorState {
   session: CaptureSession | null;
@@ -15,9 +16,10 @@ export default function Options() {
     session: null,
     selectedActions: new Set(),
     exportOptions: {
-      format: "markdown",
+      format: "html",
       includeScreenshots: true,
       blurSensitiveData: true,
+      imageFormat: "embedded",
     },
     isExporting: false,
   });
@@ -94,122 +96,15 @@ export default function Options() {
     setState((prev) => ({ ...prev, isExporting: true }));
 
     try {
-      const markdown = generateMarkdown(state.session, state.exportOptions);
-
-      if (state.exportOptions.format === "markdown") {
-        await downloadFile(
-          markdown,
-          `${state.session.title}.md`,
-          "text/markdown"
-        );
-      } else if (state.exportOptions.format === "html") {
-        const html = markdownToHtml(markdown);
-        await downloadFile(html, `${state.session.title}.html`, "text/html");
-      }
+      await ExportManager.exportSession(state.session, state.exportOptions);
     } catch (error) {
       console.error("Erreur export:", error);
+      alert(`Erreur lors de l'export: ${error instanceof Error ? error.message : error}`);
     } finally {
       setState((prev) => ({ ...prev, isExporting: false }));
     }
   };
 
-  const generateMarkdown = (
-    session: CaptureSession,
-    options: ExportOptions
-  ): string => {
-    let markdown = `# ${session.title}\n\n`;
-    markdown += `**URL:** ${session.url}\n`;
-    markdown += `**Date:** ${new Date(session.startTime).toLocaleString()}\n`;
-    markdown += `**Durée:** ${
-      session.endTime
-        ? Math.round((session.endTime - session.startTime) / 1000)
-        : "?"
-    } secondes\n\n`;
-    markdown += `## Étapes\n\n`;
-
-    session.actions.forEach((action, index) => {
-      markdown += `### ${index + 1}. ${
-        action.description || "Action sans description"
-      }\n\n`;
-
-      if (options.includeScreenshots && action.screenshot) {
-        markdown += `![Capture d'écran étape ${index + 1}](${
-          action.screenshot
-        })\n\n`;
-      }
-
-      markdown += `**Élément:** \`${action.element.selector}\`\n`;
-      if (action.element.text) {
-        markdown += `**Texte:** ${action.element.text}\n`;
-      }
-      if (action.element.value && !options.blurSensitiveData) {
-        markdown += `**Valeur:** ${action.element.value}\n`;
-      }
-      markdown += `**Horodatage:** ${new Date(
-        action.timestamp
-      ).toLocaleTimeString()}\n\n`;
-    });
-
-    return markdown;
-  };
-
-  const markdownToHtml = (markdown: string): string => {
-    return `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>${state.session?.title}</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
-    img { max-width: 100%; height: auto; border: 1px solid #ddd; border-radius: 4px; }
-    code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; }
-    h1, h2, h3 { color: #333; }
-  </style>
-</head>
-<body>
-${markdown
-  .replace(/^# (.*$)/gm, "<h1>$1</h1>")
-  .replace(/^## (.*$)/gm, "<h2>$1</h2>")
-  .replace(/^### (.*$)/gm, "<h3>$1</h3>")
-  .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-  .replace(/`(.*?)`/g, "<code>$1</code>")
-  .replace(/!\[(.*?)\]\((.*?)\)/g, '<img alt="$1" src="$2">')
-  .replace(/\n\n/g, "</p><p>")
-  .replace(/^/, "<p>")
-  .replace(/$/, "</p>")}
-</body>
-</html>`;
-  };
-
-  const sanitizeFilename = (filename: string): string => {
-    return filename
-      .replace(/[<>:"/\\|?*]/g, '_')
-      .replace(/\s+/g, '_')
-      .substring(0, 100);
-  };
-
-  const downloadFile = async (
-    content: string,
-    filename: string,
-    mimeType: string
-  ) => {
-    const sanitizedFilename = sanitizeFilename(filename);
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-
-    try {
-      await chrome.downloads.download({
-        url: url,
-        filename: sanitizedFilename,
-        saveAs: true,
-      });
-    } catch (error) {
-      console.error("Erreur téléchargement:", error);
-      throw new Error(`Échec du téléchargement: ${error.message}`);
-    } finally {
-      URL.revokeObjectURL(url);
-    }
-  };
 
   const deleteCurrentSession = async () => {
     if (!state.session) return;
@@ -274,7 +169,7 @@ ${markdown
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-4 text-sm text-gray-600">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm text-gray-600">
             <div>
               <span className="font-medium">URL:</span> {state.session.url}
             </div>
@@ -283,9 +178,123 @@ ${markdown
               {state.session.actions.length}
             </div>
             <div>
+              <span className="font-medium">Captures:</span>{" "}
+              <span className={`${
+                state.session.actions.filter(a => a.screenshot).length === state.session.actions.length
+                  ? "text-green-600"
+                  : "text-orange-600"
+              }`}>
+                {state.session.actions.filter(a => a.screenshot).length}/{state.session.actions.length}
+              </span>
+            </div>
+            <div>
               <span className="font-medium">Date:</span>{" "}
               {new Date(state.session.startTime).toLocaleString()}
             </div>
+          </div>
+        </div>
+
+        {/* Options d'export */}
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mb-6">
+          <h2 className="text-lg font-semibold text-gray-800 mb-4">Options d'export</h2>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+            {/* Format */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Format
+              </label>
+              <select
+                value={state.exportOptions.format}
+                onChange={(e) =>
+                  setState((prev) => ({
+                    ...prev,
+                    exportOptions: {
+                      ...prev.exportOptions,
+                      format: e.target.value as "markdown" | "html" | "zip",
+                    },
+                  }))
+                }
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="html">HTML (Recommandé)</option>
+                <option value="markdown">Markdown</option>
+                <option value="zip">ZIP avec images</option>
+              </select>
+            </div>
+
+            {/* Images */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Images
+              </label>
+              <select
+                value={state.exportOptions.imageFormat || "embedded"}
+                onChange={(e) =>
+                  setState((prev) => ({
+                    ...prev,
+                    exportOptions: {
+                      ...prev.exportOptions,
+                      imageFormat: e.target.value as "embedded" | "separate",
+                    },
+                  }))
+                }
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled={state.exportOptions.format === "zip"}
+              >
+                <option value="embedded">Intégrées</option>
+                <option value="separate">Séparées</option>
+              </select>
+            </div>
+
+            {/* Options */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Options
+              </label>
+              <div className="space-y-2">
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={state.exportOptions.includeScreenshots}
+                    onChange={(e) =>
+                      setState((prev) => ({
+                        ...prev,
+                        exportOptions: {
+                          ...prev.exportOptions,
+                          includeScreenshots: e.target.checked,
+                        },
+                      }))
+                    }
+                    className="mr-2 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm">Inclure captures</span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="checkbox"
+                    checked={state.exportOptions.blurSensitiveData}
+                    onChange={(e) =>
+                      setState((prev) => ({
+                        ...prev,
+                        exportOptions: {
+                          ...prev.exportOptions,
+                          blurSensitiveData: e.target.checked,
+                        },
+                      }))
+                    }
+                    className="mr-2 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="text-sm">Masquer données sensibles</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div className="text-sm text-gray-600">
+            <p><strong>HTML:</strong> Format optimal avec styles intégrés pour une meilleure présentation</p>
+            <p><strong>ZIP:</strong> Archive contenant un fichier HTML et un dossier images séparé</p>
+            <p><strong>Markdown:</strong> Format texte simple (images en base64)</p>
           </div>
         </div>
 
@@ -318,6 +327,17 @@ ${markdown
                     </span>
                     <span className="text-xs text-gray-500">
                       {new Date(action.timestamp).toLocaleTimeString()}
+                    </span>
+                    {/* Indicateur de capture */}
+                    <span
+                      className={`px-2 py-1 text-xs rounded-full ${
+                        action.screenshot
+                          ? "bg-green-100 text-green-700"
+                          : "bg-orange-100 text-orange-700"
+                      }`}
+                      title={action.screenshot ? "Capture disponible" : "Aucune capture"}
+                    >
+                      {action.screenshot ? "📸" : "❌"}
                     </span>
                   </div>
 
