@@ -18,8 +18,8 @@ Extension Chrome pour capturer automatiquement les actions utilisateur et géné
 1. Cloner le projet
 
 ```bash
-git clone <repo-url>
-cd action-capture-extension
+git clone https://github.com/venancekpro/screendocs.git
+cd screendocs
 ```
 
 2. Installer les dépendances
